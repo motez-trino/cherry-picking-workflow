@@ -1,0 +1,94 @@
+name: Auto Cherry-Pick Hotfix to Develop
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  cherry-pick:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for cherry-pick
+
+      - name: Setup Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch develop branch
+        run: git fetch origin develop
+
+      - name: Identify last merged hotfix commit
+        id: find_hotfix
+        run: |
+          # Find the latest merge commit on main with "hotfix/" in its message
+          merge_commit=$(git log main --merges -n 1 --grep="hotfix/" --pretty=format:"%H" || true)
+
+          if [ -z "$merge_commit" ]; then
+            echo "No recent hotfix merge found — skipping cherry-pick."
+            echo "found=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Found hotfix merge commit: $merge_commit"
+          echo "found=true" >> $GITHUB_OUTPUT
+          echo "merge_commit=$merge_commit" >> $GITHUB_OUTPUT
+
+      - name: Stop if no hotfix merge found
+        if: steps.find_hotfix.outputs.found == 'false'
+        run: echo "No hotfix merge detected, skipping workflow."
+
+      - name: Cherry-pick hotfix merge into develop
+        if: steps.find_hotfix.outputs.found == 'true'
+        id: cherry_pick
+        run: |
+          merge_commit=${{ steps.find_hotfix.outputs.merge_commit }}
+
+          # Checkout develop branch
+          git checkout develop
+
+          # Try to cherry-pick the merge commit
+          echo "Cherry-picking merge commit $merge_commit into develop..."
+          if ! git cherry-pick -m 1 $merge_commit; then
+            echo "::error::Cherry-pick conflict detected for commit $merge_commit."
+            git cherry-pick --abort
+            echo "conflict=true" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          echo "conflict=false" >> $GITHUB_OUTPUT
+
+      - name: Push changes to develop
+        if: steps.cherry_pick.outputs.conflict == 'false'
+        run: |
+          git push origin develop
+          echo "✅ Successfully cherry-picked hotfix into develop!"
+
+      - name: Notify Slack on conflict
+        if: failure()
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          payload: |
+            {
+              "text": ":warning: *Cherry-pick conflict detected!*",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":warning: *Cherry-pick failed while merging a hotfix into `develop`.*\nRepository: *${{ github.repository }}*\nCommit: `${{ steps.find_hotfix.outputs.merge_commit }}`\nActor: *${{ github.actor }}*\n\nManual intervention is required."
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

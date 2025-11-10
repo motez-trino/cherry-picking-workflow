@@ -72,23 +72,45 @@ jobs:
           git push origin develop
           echo "✅ Successfully cherry-picked hotfix into develop!"
 
-      - name: Notify Slack on conflict
-        if: failure()
+      # Slack notifications via Slack App (bot token)
+      - name: Notify Slack (bot) on success
+        if: ${{ success() && steps.find_hotfix.outputs.found == 'true' && secrets.SLACK_BOT_TOKEN != '' && secrets.SLACK_CHANNEL_ID != '' }}
         uses: slackapi/slack-github-action@v1.27.0
         with:
+          channel-id: ${{ secrets.SLACK_CHANNEL_ID }}
           payload: |
             {
-              "text": ":warning: *Cherry-pick conflict detected!*",
+              "text": "✅ Hotfix cherry-picked to develop",
               "blocks": [
                 {
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": ":warning: *Cherry-pick failed while merging a hotfix into `develop`.*\nRepository: *${{ github.repository }}*\nCommit: `${{ steps.find_hotfix.outputs.merge_commit }}`\nActor: *${{ github.actor }}*\n\nManual intervention is required."
+                    "text": "✅ *Cherry-pick completed successfully.*\nRepository: *${{ github.repository }}*\nFrom: `main`\nTo: `develop`\nCommit: <https://github.com/${{ github.repository }}/commit/${{ steps.find_hotfix.outputs.merge_commit }}|${{ steps.find_hotfix.outputs.merge_commit }}>\nActor: *${{ github.actor }}*"
                   }
                 }
               ]
             }
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+
+      - name: Notify Slack (bot) on conflict
+        if: ${{ failure() && secrets.SLACK_BOT_TOKEN != '' && secrets.SLACK_CHANNEL_ID != '' }}
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          channel-id: ${{ secrets.SLACK_CHANNEL_ID }}
+          payload: |
+            {
+              "text": ":warning: Cherry-pick conflict detected",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":warning: *Cherry-pick failed while merging a hotfix into `develop`.*\nRepository: *${{ github.repository }}*\nCommit: <https://github.com/${{ github.repository }}/commit/${{ steps.find_hotfix.outputs.merge_commit }}|${{ steps.find_hotfix.outputs.merge_commit }}>\nActor: *${{ github.actor }}*\n\nManual intervention is required."
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}

@@ -1,0 +1,110 @@
+name: PR Merged Notify and Daily Summary
+
+on:
+  pull_request:
+    types: [closed]
+  schedule:
+    - cron: "0 16 * * *"  # Daily at 16:00 UTC (~ adjust to your local time)
+  workflow_dispatch:
+
+permissions:
+  pull-requests: read
+
+jobs:
+  pr-merged-notify:
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.merged == true }}
+    runs-on: ubuntu-latest
+    env:
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+    steps:
+      - name: Notify Slack on PR merged
+        if: ${{ env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          channel-id: ${{ env.SLACK_CHANNEL_ID }}
+          payload: |
+            {
+              "text": ":tada: PR merged successfully!",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":tada: *PR merged successfully!*\nRepository: *${{ github.repository }}*\nPR: <${{ github.event.pull_request.html_url }}|view PR>\nNumber: #${{ github.event.pull_request.number }}\nMerged Into: `${{ github.event.pull_request.base.ref }}`\nActor: *${{ github.actor }}*\n\n*Well done you champ, I can't believe you did this, you rock!!!*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ${{ toJSON(github.event.pull_request.body || '') }}
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
+
+  daily-summary:
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    env:
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+    steps:
+      - name: Build merged PR summary for last 24h
+        id: build
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const sinceISO = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+            // Search merged PRs in the last 24h
+            const q = `repo:${owner}/${repo} is:pr is:merged merged:>=${sinceISO}`;
+            const res = await github.rest.search.issuesAndPullRequests({ q, sort: 'updated', order: 'desc', per_page: 50 });
+            const items = res.data.items || [];
+
+            if (items.length === 0) {
+              core.setOutput('summary_json', JSON.stringify('No PRs merged in the last 24 hours.'));
+              return;
+            }
+
+            // Fetch base branch for each PR
+            const lines = [];
+            for (const it of items) {
+              const num = it.number;
+              const pull = await github.rest.pulls.get({ owner, repo, pull_number: num });
+              const base = pull.data.base.ref;
+              const title = it.title;
+              const url = it.html_url;
+              const mergedBy = pull.data.merged_by ? pull.data.merged_by.login : 'unknown';
+              const mergedAt = pull.data.merged_at || it.closed_at || '';
+              lines.push(`• #${num} ${title} → ${base} (by ${mergedBy})\n   ${url}\n   merged at ${mergedAt}`);
+            }
+
+            const header = `Merged PRs in the last 24 hours for ${owner}/${repo}`;
+            const text = `${header}\n\n${lines.join('\n')}`;
+            core.setOutput('summary_json', JSON.stringify(text));
+
+      - name: Notify Slack daily merged PR summary
+        if: ${{ env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          channel-id: ${{ env.SLACK_CHANNEL_ID }}
+          payload: |
+            {
+              "text": ${{ steps.build.outputs.summary_json }},
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ${{ steps.build.outputs.summary_json }}
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}

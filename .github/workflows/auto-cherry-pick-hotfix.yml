@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: read
 
 jobs:
   cherry-pick:
@@ -48,6 +49,57 @@ jobs:
       - name: Stop if no hotfix merge found
         if: steps.find_hotfix.outputs.found == 'false'
         run: echo "No hotfix merge detected, skipping workflow."
+
+      - name: Get PR details for merge commit
+        if: steps.find_hotfix.outputs.found == 'true'
+        id: get_pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const sha = '${{ steps.find_hotfix.outputs.merge_commit }}';
+            const res = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner,
+              repo,
+              commit_sha: sha,
+            });
+            const pr = res.data && res.data[0];
+            const number = pr ? pr.number : '';
+            const title = pr ? pr.title || '' : '';
+            const body = pr ? pr.body || '' : '';
+            const url = pr ? pr.html_url || '' : '';
+            core.setOutput('number', number);
+            core.setOutput('title', title);
+            core.setOutput('body_json', JSON.stringify(body));
+            core.setOutput('url', url);
+
+      - name: Notify Slack (bot) PR merged
+        if: ${{ steps.find_hotfix.outputs.found == 'true' && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          channel-id: ${{ env.SLACK_CHANNEL_ID }}
+          payload: |
+            {
+              "text": "🎉 Hotfix PR merged to main",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "🎉 *PR merged successfully!*\nRepository: *${{ github.repository }}*\nPR: <${{ steps.get_pr.outputs.url }}|view PR>\nNumber: #${{ steps.get_pr.outputs.number }}\nActor: *${{ github.actor }}*\n\n*Well done you champ, I can't believe you did this, you rock!!!*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ${{ steps.get_pr.outputs.body_json }}
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
 
       - name: Cherry-pick hotfix merge into develop
         if: steps.find_hotfix.outputs.found == 'true'

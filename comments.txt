@@ -1,4 +1,4 @@
-[1] .github/workflows/auto-cherry-pick-hotfix.yml
+.github/workflows/auto-cherry-pick-hotfix.yml
           SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
 
       - name: Notify Slack (bot) on conflict
@@ -7,8 +7,7 @@
 ali-jbara
 5 hours ago
 This is triggered on any failure and not just on conflicts. This step seems to need the check steps.cherry_pick.outcome == 'failure' && steps.cherry_pick.outputs.conflict == 'true' and maybe another step to handle other failures
-Fix: Conflict notification now requires both a failure and `steps.cherry_pick.outputs.conflict == 'true'`. Other failures won’t notify as conflicts.
-[2] mary.yml
+mary.yml
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
@@ -19,10 +18,9 @@ Triple quotes
 Slack-special chars
 Long content
 Suggestion: truncate or sanitize PR body, or wrap in a code block.
-Fix: PR body is sanitized, truncated to 1000 chars, and wrapped in a code block in Slack notifications.
 
 @motez-trino	Reply...
-[3] .github/workflows/pr-merged-notify-and-summary.yml
+.github/workflows/pr-merged-notify-and-summary.yml
   workflow_dispatch:
 
 permissions:
@@ -31,16 +29,13 @@ permissions:
 ali-jbara
 5 hours ago
 This might not be enough, I'm not sure if it works now for this repo due to our current organization settings, but to be future proof and make sure that using github.rest.search.iu0or,eaerion.tfix.yml
-Fix: Added `contents: read` and `issues: read` to token permissions.
-[4]
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
                     "text": "✅ *Cherry-pick completed successfully.*\nRepository: *${{ github.repository }}*\nFrom: `main`\nTo: `develop`\nCommit: <https://github.com/${{ github.repository }}/commit/${{ steps.find_hotfix.outputs.merge_commit }}|${{ steps.find_hotfix.outputs.merge_commit }}>\nActor: *${{ github.actor }}@aactor is not acthe actor running the workflow, not the user who merged. ${{ github.event.pull_request.merged_by.login }} would give the user who merged.
-Fix: Replaced `github.actor` with `github.event.pull_request.merged_by.login` where applicable.
 
 @motez-trino	Reply...
-[5] .github/workflows/auto-cherry-pick-hotfix.yml
+.github/workflows/auto-cherry-pick-hotfix.yml
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
@@ -49,7 +44,6 @@ Fix: Replaced `github.actor` with `github.event.pull_request.merged_by.login` wh
 ali-jbara
 5 hours ago
 github.actor${{ github.event.pull_request.merged_by.login }} would give the user who merged.
-Fix: Conflict notification uses `github.event.pull_request.merged_by.login` for the actor.
 
 @motez-trino	Reply...
 .github/workflows/pr-merged-notify-and-summary.yml
@@ -63,7 +57,7 @@ ali-jbara
 github.actor is not accurate here. This gives the actor running the workflow, .u_rt.meri user who merged.
 
 @motez-trino	Reply...
-[6] .github/workflows/auto-cherry-pick-hotfix.yml
+.github/workflows/auto-cherry-pick-hotfix.yml
 
 
       - name: Cherry-pick hotfix merge into develop
@@ -84,8 +78,7 @@ Recommended fix:
 if: >
   steps.find_hotfix.result == 'success' &&
   contains(steps.find_hotfix.outnoeply...
-Fix: Removed `find_hotfix` approach; the job is gated at the job-level on merged hotfix PRs, and we explicitly stop when no commits are to be cherry-picked.
-[7] .github/workflows/auto-cherry-pick-hotfix.yml
+.github/workflows/auto-cherry-pick-hotfix.yml
         id: find_hotfix
         run: |
           # Find the latest merge commit on main with "hotfix/" in its message
@@ -94,10 +87,9 @@ Fix: Removed `find_hotfix` approach; the job is gated at the job-level on merged
 ali-jbara
 4 hours ago
 || : is preferred over || true so no subshell or other process is created.
-Fix: Replaced uses of `|| true` with `|| :` where applicable.
 
 @motez-trino	Reply...
-[8] .github/workflows/auto-cherry-pick-hotfix.yml
+.github/workflows/auto-cherry-pick-hotfix.yml
           git push origin develop
           echo "✅ Successfully cherry-picked hotfix into develop!"
       # Slack notifications via Slack App (bot token)
@@ -105,18 +97,16 @@ Fix: Replaced uses of `|| true` with `|| :` where applicable.
 ali-jbara
 4 hours ago
 This workflow is using a Slack bot token (SLACK_BOT_TOKEN) and a channel ID (SLACK_CHANNEL_ID) for notifications, whereas our previous CI/CD workflows use a Slack incomingintainers and make secret management less predictable. If possible, align with existing patterns (e.g., continue using webhook URLs).
-Fix: Migrated Slack notifications to a single mechanism: Incoming Webhook (`SLACK_WEBHOOK_URL`).
 
 @motez-trino	Reply...
-[9] .github/workflows/pr-merged-notify-and-summary.yml
+.github/workflows/pr-merged-notify-and-summary.yml
             const text = `${header}\n\n${lines.join('\n')}`;
             core.setOutput('summary_json', JSON.stringify(text));
       - name: Notify Slack daily merged PR summary
 @ali-jTnEations, whereas our previous CI/CD workflows use a Slack incoming webhook URL or a Slack app with webhook integration. From a consistency point of view, using different notification mechanisms across workflows can confuse maintainers and make secret management less predictable. If possible, align with existing patterns (e.g., continue using webhook URLs).
-Fix: Switched daily summary to Slack webhook and simplified outputs to plain text.
 
 @motez-trino	Reply...
-[10] .github/workflows/auto-cherry-pick-hotfix.yml
+.github/workflows/auto-cherry-pick-hotfix.yml
       - name: Identify last merged hotfix commit
         id: find_hotfix
         run: |
@@ -125,10 +115,9 @@ Fix: Switched daily summary to Slack webhook and simplified outputs to plain tex
 ali-jbara
 4 hours ago
 The workflow searches for "hotfix/" in the commit message, but this could match false positives t beleive this is the right way. I think you should be checking the actual pull request metadata that triggered the push and checking the source branch name if it starts with hotfix/.
-Fix: Workflow now triggers on `pull_request` closed and gates on `startsWith(github.event.pull_request.head.ref, 'hotfix/')`.
 
 @motez-trino	Reply...
-[11] .github/workflows/auto-cherry-pick-hotfix.yml
+.github/workflows/auto-cherry-pick-hotfix.yml
           merge_commit=${{ steps.find_hotfix.outputs.merge_commit }}
           # Checkout develop branch
           git checkout develop
@@ -136,10 +125,9 @@ Fix: Workflow now triggers on `pull_request` closed and gates on `startsWith(git
 ali-jbara
 4 hours ago
 Should verify the checkout succeeded: git checkout develop || { echo "Failed to checkout develop"; exit 1; }
-Fix: Added explicit verification for `git checkout develop` with fail-fast.
 
 @motez-trino	Reply...
-[12] .github/workflows/auto-cherry-pick-hotfix.yml
+.github/workflows/auto-cherry-pick-hotfix.yml
           # Try to cherry-pick the merge commit
           echo "Cherry-picking merge commit $merge_commit into develop..."
           if ! git cherry-pick -m 1 $merge_commit; then
@@ -147,10 +135,9 @@ Fix: Added explicit verification for `git checkout develop` with fail-fast.
 ali-jbara
 3 hours ago
 This is cherry-picking just the latest commit. This is wrong, what if the hotfix branch has multiple commits. Moreover, this will probably just cherry-pick the merge commit rather than the actual commiyt. The solution would be to cherry-pick the range of commits between base and merge.
-Fix: We now cherry-pick the full commit list from `base.sha..head.sha` (oldest-first), skipping commits already in `develop`.
 
 @motez-trino	Reply...
-[13] .github/workflows/auto-cherry-pick-hotfix.yml
+.github/workflows/auto-cherry-pick-hotfix.yml
       - name: Fetch develop branch
         run: git fetch origin develop
 
@@ -189,8 +176,6 @@ Guarantees every hotfix is processed
 Eliminates race conditions
 Uses actual branch name from PR metadata (works with all merge strategies)
 No need to poeok@itws/pr-merged-notify-and-summary.yml
-Fix: Implemented `pull_request.closed` trigger and gating as suggested to eliminate race conditions.
-[14]
             // Search merged PRs in the last 24h
             const q = `repo:${owner}/${repo} is:pr is:merged merged:>=${sinceISO}`;
             const res = await github.rest.search.issuesAndPullRequests({ q, sort: 'updated', order: 'desc', per_page: 50 });
@@ -198,13 +183,12 @@ Fix: Implemented `pull_request.closed` trigger and gating as suggested to elimin
 ali-jbara
 3 hours ago
 You are paginating by 50 but never reading the other pages
-Fix: Implemented pagination over up to 10 pages until fewer than 50 results are returned.
 
 
 
 
 
-[15] also one last comment 
+also one last comment 
 
 3 hours ago
 This workflow needs an idempotency check to make sure the commits are not in develop already. We have multiple potential solutions here.
@@ -212,4 +196,4 @@ This workflow needs an idempotency check to make sure the commits are not in dev
 Test Cherry-pick (Dry Run): Try cherry-picking and see if Git says it would result in an empty commit
 Track via Metadata : Find a way to track which PRs have been processed. This can be through utilizing git tags or git notes - marking PRs as processed and checking if a PR is processed.
 Please check and test which approach would work better for us.
-Fix: Added idempotency: we skip commits that are already ancestors of `origin/develop`; if none remain, the job exits cleanly.
+ali-jbara

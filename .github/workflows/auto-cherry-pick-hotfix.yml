@@ -31,7 +31,8 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Fetch develop branch
-        run: git fetch origin develop || :
+        run: |
+          git fetch origin develop || :
 
       - name: Build commit list to cherry-pick
         id: build_list

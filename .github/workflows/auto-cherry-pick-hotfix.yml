@@ -50,12 +50,20 @@ jobs:
           conflict=false
           applied=false
           while IFS= read -r sha; do
+            parents_count=$(git show -s --pretty=%P "$sha" | wc -w)
+            if [ "$parents_count" -gt 1 ]; then
+              continue
+            fi
             if git merge-base --is-ancestor "$sha" develop; then
               continue
             fi
             files=$(git show --pretty='' --name-only "$sha")
             non_ci=$(echo "$files" | grep -Ev '^\.github(/|$)') || true
             if [ -z "$non_ci" ]; then
+              continue
+            fi
+            non_doc=$(echo "$non_ci" | grep -Ev '^(comments\.txt)$') || true
+            if [ -z "$non_doc" ]; then
               continue
             fi
             if ! git cherry-pick -X theirs -n "$sha"; then
@@ -66,10 +74,13 @@ jobs:
             if echo "$files" | grep -E '^\.github(/|$)'; then
               git restore --staged --worktree --source=HEAD .github || true
             fi
+            if echo "$files" | grep -E '^comments\.txt$'; then
+              git restore --staged --worktree --source=HEAD comments.txt || true
+            fi
             applied=true
           done <<< "${{ steps.list_commits.outputs.shas }}"
           if [ "$applied" = true ] && ! git diff --cached --quiet; then
-            git commit -m "Cherry-pick hotfix PR #${{ github.event.pull_request.number }} into develop (CI files excluded; prefer theirs on conflicts)"
+            git commit -m "Cherry-pick hotfix PR #${{ github.event.pull_request.number }} into develop (CI/docs excluded; prefer theirs on conflicts)"
             echo "already_applied=false" >> $GITHUB_OUTPUT
           else
             echo "already_applied=true" >> $GITHUB_OUTPUT

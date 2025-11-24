@@ -58,10 +58,13 @@ jobs:
             if [ -z "$non_ci" ]; then
               continue
             fi
-            if ! git cherry-pick -X theirs -n "$sha" -- . ':(exclude).github'; then
+            if ! git cherry-pick -X theirs -n "$sha"; then
               git cherry-pick --abort
               echo "conflict=true" >> $GITHUB_OUTPUT
               exit 1
+            fi
+            if echo "$files" | grep -E '^\.github(/|$)'; then
+              git restore --staged --worktree --source=HEAD .github || true
             fi
             applied=true
           done <<< "${{ steps.list_commits.outputs.shas }}"

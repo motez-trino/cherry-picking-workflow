@@ -141,6 +141,7 @@ This is cherry-picking just the latest commit. This is wrong, what if the hotfix
 .github/workflows/auto-cherry-pick-hotfix.yml
       - name: Fetch develop branch
 [9] Fixed: Cherry-picking now uses the range `${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}` to include all hotfix commits.
+[19] Fixed: Resolve typical content conflicts by preferring hotfix changes. Cherry-pick now uses `-X theirs` for non-CI files, reducing manual conflict resolution. See `.github/workflows/auto-cherry-pick-hotfix.yml:57-76`.
         run: git fetch origin develop
 
       - name: Identify last merged hotfix commit

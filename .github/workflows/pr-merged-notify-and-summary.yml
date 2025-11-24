@@ -28,20 +28,23 @@ jobs:
             const body = (context.payload.pull_request.body || '').toString();
             const sanitize = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             const truncated = sanitize(body).slice(0, 1200);
-            const wrapped = truncated ? `\
-\`\`\`${truncated}\`\`\`` : '';
+            const wrapped = truncated ? ('```' + truncated + '```') : '';
             core.setOutput('sanitized_body', wrapped);
 
       - name: Notify Slack (webhook) on PR merged
         if: ${{ env.SLACK_WEBHOOK_URL != '' }}
         run: |
-          curl -X POST -H 'Content-type: application/json' --data '{
+          payload=$(cat <<'JSON'
+          {
             "text": ":tada: PR merged",
             "blocks": [
               {"type": "section", "text": {"type": "mrkdwn", "text": ":tada: *PR merged successfully!*\nRepository: *${{ github.repository }}*\nPR: <${{ github.event.pull_request.html_url }}|view PR>\nNumber: #${{ github.event.pull_request.number }}\nMerged Into: `${{ github.event.pull_request.base.ref }}`\nActor: *${{ github.event.pull_request.merged_by.login }}*"}},
               {"type": "section", "text": {"type": "mrkdwn", "text": "${{ steps.build.outputs.sanitized_body }}"}}
             ]
-          }' $SLACK_WEBHOOK_URL
+          }
+          JSON
+          )
+          curl -X POST -H 'Content-type: application/json' --data "$payload" $SLACK_WEBHOOK_URL
 
       - name: Notify Slack (bot) on PR merged
         if: ${{ env.SLACK_WEBHOOK_URL == '' && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
@@ -104,12 +107,16 @@ jobs:
       - name: Notify Slack (webhook) daily summary
         if: ${{ env.SLACK_WEBHOOK_URL != '' }}
         run: |
-          curl -X POST -H 'Content-type: application/json' --data '{
+          payload=$(cat <<'JSON'
+          {
             "text": "${{ steps.build.outputs.summary_text }}",
             "blocks": [
               {"type": "section", "text": {"type": "mrkdwn", "text": "${{ steps.build.outputs.summary_text }}"}}
             ]
-          }' $SLACK_WEBHOOK_URL
+          }
+          JSON
+          )
+          curl -X POST -H 'Content-type: application/json' --data "$payload" $SLACK_WEBHOOK_URL
 
       - name: Notify Slack (bot) daily summary
         if: ${{ env.SLACK_WEBHOOK_URL == '' && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}

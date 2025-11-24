@@ -1,15 +1,18 @@
 name: Auto Cherry-Pick Hotfix to Develop
 
 on:
-  push:
+  pull_request:
+    types: [closed]
     branches:
       - main
 
 permissions:
   contents: write
+  pull-requests: read
 
 jobs:
   cherry-pick:
+    if: ${{ github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'hotfix/') }}
     runs-on: ubuntu-latest
     env:
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -19,7 +22,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full history for cherry-pick
+          fetch-depth: 0
 
       - name: Setup Git
         run: |
@@ -29,57 +32,42 @@ jobs:
       - name: Fetch develop branch
         run: git fetch origin develop
 
-      - name: Identify last merged hotfix commit
-        id: find_hotfix
+      - name: Prepare cherry-pick range
+        id: prepare
         run: |
-          # Find the latest merge commit on main with "hotfix/" in its message
-          merge_commit=$(git log main --merges -n 1 --grep="hotfix/" --pretty=format:"%H" || true)
+          echo "base_sha=${{ github.event.pull_request.base.sha }}" >> $GITHUB_OUTPUT
+          echo "head_sha=${{ github.event.pull_request.head.sha }}" >> $GITHUB_OUTPUT
+          echo "pr_number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          echo "merge_commit=${{ github.event.pull_request.merge_commit_sha }}" >> $GITHUB_OUTPUT
 
-          if [ -z "$merge_commit" ]; then
-            echo "No recent hotfix merge found — skipping cherry-pick."
-            echo "found=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          echo "Found hotfix merge commit: $merge_commit"
-          echo "found=true" >> $GITHUB_OUTPUT
-          echo "merge_commit=$merge_commit" >> $GITHUB_OUTPUT
-
-      - name: Stop if no hotfix merge found
-        if: steps.find_hotfix.outputs.found == 'false'
-        run: echo "No hotfix merge detected, skipping workflow."
-
-      
-
-      - name: Cherry-pick hotfix merge into develop
-        if: steps.find_hotfix.outputs.found == 'true'
+      - name: Cherry-pick hotfix range into develop
         id: cherry_pick
+        if: ${{ steps.prepare.outputs.base_sha != '' && steps.prepare.outputs.head_sha != '' }}
         run: |
-          merge_commit=${{ steps.find_hotfix.outputs.merge_commit }}
-
-          # Checkout develop branch
-          git checkout develop
-
-          # Try to cherry-pick the merge commit
-          echo "Cherry-picking merge commit $merge_commit into develop..."
-          if ! git cherry-pick -m 1 $merge_commit; then
-            echo "::error::Cherry-pick conflict detected for commit $merge_commit."
-            git cherry-pick --abort
+          base=${{ steps.prepare.outputs.base_sha }}
+          head=${{ steps.prepare.outputs.head_sha }}
+          pr=${{ steps.prepare.outputs.pr_number }}
+          git checkout develop || { echo "::error::Failed to checkout develop"; exit 1; }
+          if ! git cherry-pick -n ${base}..${head}; then
             echo "conflict=true" >> $GITHUB_OUTPUT
+            git cherry-pick --abort
             exit 1
           fi
-
-          echo "conflict=false" >> $GITHUB_OUTPUT
+          if git diff --quiet; then
+            echo "already_applied=true" >> $GITHUB_OUTPUT
+            git reset --hard
+          else
+            echo "already_applied=false" >> $GITHUB_OUTPUT
+            git commit -m "Cherry-pick hotfix PR #${pr} into develop"
+            echo "conflict=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Push changes to develop
-        if: steps.cherry_pick.outputs.conflict == 'false'
-        run: |
-          git push origin develop
-          echo "✅ Successfully cherry-picked hotfix into develop!"
+        if: ${{ steps.cherry_pick.outputs.conflict == 'false' && steps.cherry_pick.outputs.already_applied == 'false' }}
+        run: git push origin develop
 
-      # Slack notifications via Slack App (bot token)
       - name: Notify Slack (bot) on success
-        if: ${{ success() && steps.find_hotfix.outputs.found == 'true' && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
+        if: ${{ success() && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' && steps.cherry_pick.outputs.already_applied == 'false' }}
         uses: slackapi/slack-github-action@v1.27.0
         with:
           channel-id: ${{ env.SLACK_CHANNEL_ID }}
@@ -91,7 +79,28 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "✅ *Cherry-pick completed successfully.*\nRepository: *${{ github.repository }}*\nFrom: `main`\nTo: `develop`\nCommit: <https://github.com/${{ github.repository }}/commit/${{ steps.find_hotfix.outputs.merge_commit }}|${{ steps.find_hotfix.outputs.merge_commit }}>\nActor: *${{ github.actor }}*"
+                    "text": "✅ *Cherry-pick completed successfully.*\nRepository: *${{ github.repository }}*\nFrom: `main`\nTo: `develop`\nPR: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>\nMerge: <https://github.com/${{ github.repository }}/commit/${{ steps.prepare.outputs.merge_commit }}|${{ steps.prepare.outputs.merge_commit }}>\nMerged By: *${{ github.event.pull_request.merged_by.login }}*"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
+
+      - name: Notify Slack (bot) already applied
+        if: ${{ success() && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' && steps.cherry_pick.outputs.already_applied == 'true' }}
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          channel-id: ${{ env.SLACK_CHANNEL_ID }}
+          payload: |
+            {
+              "text": "ℹ️ Hotfix already present in develop",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "ℹ️ Commits from hotfix PR #${{ github.event.pull_request.number }} are already present in `develop`."
                   }
                 }
               ]
@@ -100,7 +109,7 @@ jobs:
           SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
 
       - name: Notify Slack (bot) on conflict
-        if: ${{ failure() && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
+        if: ${{ steps.cherry_pick.outcome == 'failure' && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' && steps.cherry_pick.outputs.conflict == 'true' }}
         uses: slackapi/slack-github-action@v1.27.0
         with:
           channel-id: ${{ env.SLACK_CHANNEL_ID }}
@@ -112,7 +121,28 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": ":warning: *Cherry-pick failed while merging a hotfix into `develop`.*\nRepository: *${{ github.repository }}*\nCommit: <https://github.com/${{ github.repository }}/commit/${{ steps.find_hotfix.outputs.merge_commit }}|${{ steps.find_hotfix.outputs.merge_commit }}>\nActor: *${{ github.actor }}*\n\nManual intervention is required."
+                    "text": ":warning: *Cherry-pick failed while merging a hotfix into `develop`.*\nRepository: *${{ github.repository }}*\nPR: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>\nMerged By: *${{ github.event.pull_request.merged_by.login }}*\n\nManual intervention is required."
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
+
+      - name: Notify Slack (bot) on other failure
+        if: ${{ failure() && (steps.cherry_pick.outputs.conflict != 'true') && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          channel-id: ${{ env.SLACK_CHANNEL_ID }}
+          payload: |
+            {
+              "text": ":x: Cherry-pick workflow failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":x: *Cherry-pick workflow encountered an error unrelated to merge conflicts.*\nRepository: *${{ github.repository }}*\nPR: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>"
                   }
                 }
               ]

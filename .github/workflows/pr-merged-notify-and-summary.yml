@@ -4,11 +4,13 @@ on:
   pull_request:
     types: [closed]
   schedule:
-    - cron: "0 16 * * *"  # Daily at 16:00 UTC (~ adjust to your local time)
+    - cron: "0 16 * * *"
   workflow_dispatch:
 
 permissions:
+  contents: read
   pull-requests: read
+  issues: read
 
 jobs:
   pr-merged-notify:
@@ -18,6 +20,15 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
     steps:
+      - name: Prepare PR body
+        id: prepare_body
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request?.body || '';
+            const trunc = body.length > 800 ? body.slice(0, 800) + '…' : body;
+            const wrapped = '```\n' + trunc.replace(/```/g, '``\`') + '\n```';
+            core.setOutput('body_sanitized_json', JSON.stringify(wrapped));
       - name: Notify Slack on PR merged
         if: ${{ env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
         uses: slackapi/slack-github-action@v1.27.0
@@ -31,14 +42,14 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": ":tada: *PR merged successfully!*\nRepository: *${{ github.repository }}*\nPR: <${{ github.event.pull_request.html_url }}|view PR>\nNumber: #${{ github.event.pull_request.number }}\nMerged Into: `${{ github.event.pull_request.base.ref }}`\nActor: *${{ github.actor }}*\n\n*Well done you champ, I can't believe you did this, you rock!!!*"
+                    "text": ":tada: *PR merged successfully!*\nRepository: *${{ github.repository }}*\nPR: <${{ github.event.pull_request.html_url }}|view PR>\nNumber: #${{ github.event.pull_request.number }}\nMerged Into: `${{ github.event.pull_request.base.ref }}`\nMerged By: *${{ github.event.pull_request.merged_by.login }}*\n\n*Well done you champ, I can't believe you did this, you rock!!!*"
                   }
                 },
                 {
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": ${{ toJSON(github.event.pull_request.body || '') }}
+                    "text": ${{ steps.prepare_body.outputs.body_sanitized_json }}
                   }
                 }
               ]
@@ -61,10 +72,17 @@ jobs:
             const { owner, repo } = context.repo;
             const sinceISO = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
-            // Search merged PRs in the last 24h
             const q = `repo:${owner}/${repo} is:pr is:merged merged:>=${sinceISO}`;
-            const res = await github.rest.search.issuesAndPullRequests({ q, sort: 'updated', order: 'desc', per_page: 50 });
-            const items = res.data.items || [];
+            const perPage = 50;
+            const items = [];
+            let page = 1;
+            while (true) {
+              const res = await github.rest.search.issuesAndPullRequests({ q, sort: 'updated', order: 'desc', per_page: perPage, page });
+              const batch = res.data.items || [];
+              items.push(...batch);
+              if (batch.length < perPage || page >= 5) break;
+              page++;
+            }
 
             if (items.length === 0) {
               core.setOutput('summary_json', JSON.stringify('No PRs merged in the last 24 hours.'));

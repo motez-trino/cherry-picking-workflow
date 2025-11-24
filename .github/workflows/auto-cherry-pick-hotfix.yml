@@ -12,18 +12,18 @@ permissions:
 
 jobs:
   cherry-pick:
+    if: |
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'hotfix/')
     runs-on: ubuntu-latest
-    if: ${{ github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'hotfix/') }}
     env:
-      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # Full history for cherry-pick
 
       - name: Setup Git
         run: |
@@ -31,92 +31,95 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Fetch develop branch
-        run: git fetch origin develop
+        run: git fetch origin develop || :
 
-      - name: List PR commits
-        id: list_commits
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const { owner, repo } = context.repo;
-            const num = context.payload.pull_request.number;
-            const commits = await github.paginate(github.rest.pulls.listCommits, { owner, repo, pull_number: num, per_page: 100 });
-            const shas = commits.map(c => c.sha);
-            core.setOutput('shas', shas.join('\n'));
-
-      - name: Cherry-pick commits into develop
-        id: cherry_pick
+      - name: Build commit list to cherry-pick
+        id: build_list
+        shell: bash
         run: |
+          set -euo pipefail
+          BASE_SHA=${{ github.event.pull_request.base.sha }}
+          HEAD_SHA=${{ github.event.pull_request.head.sha }}
+          HEAD_REF=${{ github.event.pull_request.head.ref }}
+
+          echo "Pull Request base: $BASE_SHA"
+          echo "Pull Request head: $HEAD_SHA ($HEAD_REF)"
+
+          # Ensure head branch is available locally
+          git fetch origin "$HEAD_REF" || :
+
+          # List commits in PR (exclude merges), oldest-first
+          COMMITS=$(git log --no-merges --reverse --format=%H "$BASE_SHA".."$HEAD_SHA")
+
+          if [ -z "$COMMITS" ]; then
+            echo "No commits found in PR range; nothing to cherry-pick."
+            echo "to_pick=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Idempotency: filter out commits already in develop
+          TO_PICK=""
+          for c in $COMMITS; do
+            if git merge-base --is-ancestor "$c" origin/develop; then
+              echo "Commit $c already in develop; skipping."
+            else
+              TO_PICK="$TO_PICK $c"
+            fi
+          done
+
+          TO_PICK=$(echo "$TO_PICK" | xargs)
+          echo "Commits to cherry-pick: $TO_PICK"
+          echo "to_pick=$TO_PICK" >> "$GITHUB_OUTPUT"
+
+      - name: Stop if nothing to cherry-pick
+        if: ${{ steps.build_list.outputs.to_pick == '' }}
+        run: echo "No new commits to cherry-pick; exiting."
+
+      
+
+      - name: Cherry-pick PR commits into develop
+        id: cherry_pick
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Checkout develop and verify
           git checkout develop || { echo "Failed to checkout develop"; exit 1; }
-          conflict=false
-          while IFS= read -r sha; do
-            if git merge-base --is-ancestor "$sha" develop; then
-              continue
+
+          CONFLICT=false
+          for c in ${{ steps.build_list.outputs.to_pick }}; do
+            echo "Cherry-picking commit $c into develop..."
+            if ! git cherry-pick -x "$c"; then
+              echo "::error::Cherry-pick conflict detected for commit $c. Aborting."
+              git cherry-pick --abort || :
+              CONFLICT=true
+              break
             fi
-            if ! git cherry-pick "$sha"; then
-              git cherry-pick --abort
-              echo "conflict=true" >> $GITHUB_OUTPUT
-              exit 1
-            fi
-          done <<< "${{ steps.list_commits.outputs.shas }}"
-          echo "conflict=false" >> $GITHUB_OUTPUT
+          done
+
+          echo "conflict=${CONFLICT}" >> "$GITHUB_OUTPUT"
 
       - name: Push changes to develop
         if: steps.cherry_pick.outputs.conflict == 'false'
-        run: git push origin develop
+        run: |
+          git push origin develop
+          echo "✅ Successfully cherry-picked hotfix into develop!"
 
-      - name: Notify Slack (webhook) on success
+      - name: Notify Slack on success (webhook)
         if: ${{ success() && env.SLACK_WEBHOOK_URL != '' }}
+        shell: bash
         run: |
-          curl -X POST -H 'Content-type: application/json' --data '{
-            "text": "✅ Hotfix cherry-picked to develop",
-            "blocks": [
-              {"type": "section", "text": {"type": "mrkdwn", "text": "✅ *Cherry-pick completed successfully.*\nRepository: *${{ github.repository }}*\nFrom: `main`\nTo: `develop`\nPR: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>\nActor: *${{ github.event.pull_request.merged_by.login }}*"}}
-            ]
-          }' $SLACK_WEBHOOK_URL
+          PR_URL=${{ github.event.pull_request.html_url }}
+          ACTOR=${{ github.event.pull_request.merged_by.login }}
+          TEXT="✅ Cherry-pick completed successfully.\nRepository: ${{ github.repository }}\nFrom: main\nTo: develop\nPR: <${PR_URL}|view PR>\nMerged by: ${ACTOR}"
+          PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text, blocks: [{type:"section", text:{type:"mrkdwn", text:$text}}]}')
+          curl -s -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"
 
-      - name: Notify Slack (bot) on success
-        if: ${{ success() && env.SLACK_WEBHOOK_URL == '' && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
-        uses: slackapi/slack-github-action@v1.27.0
-        with:
-          channel-id: ${{ env.SLACK_CHANNEL_ID }}
-          payload: |
-            {
-              "text": "✅ Hotfix cherry-picked to develop",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {"type": "mrkdwn", "text": "✅ *Cherry-pick completed successfully.*\nRepository: *${{ github.repository }}*\nFrom: `main`\nTo: `develop`\nPR: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>\nActor: *${{ github.event.pull_request.merged_by.login }}*"}
-                }
-              ]
-            }
-        env:
-          SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
-
-      - name: Notify Slack (webhook) on conflict
-        if: ${{ steps.cherry_pick.outcome == 'failure' && steps.cherry_pick.outputs.conflict == 'true' && env.SLACK_WEBHOOK_URL != '' }}
+      - name: Notify Slack on conflict (webhook)
+        if: ${{ failure() && env.SLACK_WEBHOOK_URL != '' && steps.cherry_pick.outputs.conflict == 'true' }}
+        shell: bash
         run: |
-          curl -X POST -H 'Content-type: application/json' --data '{
-            "text": ":warning: Cherry-pick conflict detected",
-            "blocks": [
-              {"type": "section", "text": {"type": "mrkdwn", "text": ":warning: *Cherry-pick failed while merging a hotfix into `develop`.*\nRepository: *${{ github.repository }}*\nPR: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>\nActor: *${{ github.event.pull_request.merged_by.login }}*\n\nManual intervention is required."}}
-            ]
-          }' $SLACK_WEBHOOK_URL
-
-      - name: Notify Slack (bot) on conflict
-        if: ${{ steps.cherry_pick.outcome == 'failure' && steps.cherry_pick.outputs.conflict == 'true' && env.SLACK_WEBHOOK_URL == '' && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
-        uses: slackapi/slack-github-action@v1.27.0
-        with:
-          channel-id: ${{ env.SLACK_CHANNEL_ID }}
-          payload: |
-            {
-              "text": ":warning: Cherry-pick conflict detected",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {"type": "mrkdwn", "text": ":warning: *Cherry-pick failed while merging a hotfix into `develop`.*\nRepository: *${{ github.repository }}*\nPR: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>\nActor: *${{ github.event.pull_request.merged_by.login }}*\n\nManual intervention is required."}
-                }
-              ]
-            }
-        env:
-          SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
+          PR_URL=${{ github.event.pull_request.html_url }}
+          ACTOR=${{ github.event.pull_request.merged_by.login }}
+          TEXT=":warning: Cherry-pick failed while merging a hotfix into develop.\nRepository: ${{ github.repository }}\nPR: <${PR_URL}|view PR>\nMerged by: ${ACTOR}\n\nManual intervention is required."
+          PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text, blocks: [{type:"section", text:{type:"mrkdwn", text:$text}}]}')
+          curl -s -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"

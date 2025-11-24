@@ -34,31 +34,36 @@ jobs:
         run: |
           git fetch origin develop || :
 
-      - name: Build commit list to cherry-pick
+      - name: List PR commits (API)
+        id: list_commits
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const number = context.payload.pull_request.number;
+            const commits = await github.paginate(github.rest.pulls.listCommits, {
+              owner, repo, pull_number: number, per_page: 100
+            });
+            const shas = commits.map(c => c.sha);
+            core.info(`PR commits (${shas.length}): ${shas.join(' ')}`);
+            core.setOutput('shas', shas.join(' '));
+
+      - name: Prepare commit list to cherry-pick
         id: build_list
         shell: bash
         run: |
           set -euo pipefail
-          BASE_SHA=${{ github.event.pull_request.base.sha }}
-          HEAD_SHA=${{ github.event.pull_request.head.sha }}
           HEAD_REF=${{ github.event.pull_request.head.ref }}
-
-          echo "Pull Request base: $BASE_SHA"
-          echo "Pull Request head: $HEAD_SHA ($HEAD_REF)"
-
-          # Ensure head branch is available locally
+          echo "PR head ref: $HEAD_REF"
           git fetch origin "$HEAD_REF" || :
 
-          # List commits in PR (exclude merges), oldest-first
-          COMMITS=$(git log --no-merges --reverse --format=%H "$BASE_SHA".."$HEAD_SHA")
-
+          COMMITS="${{ steps.list_commits.outputs.shas }}"
           if [ -z "$COMMITS" ]; then
-            echo "No commits found in PR range; nothing to cherry-pick."
+            echo "No commits returned by API; nothing to cherry-pick."
             echo "to_pick=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Idempotency: filter out commits already in develop
           TO_PICK=""
           for c in $COMMITS; do
             if git merge-base --is-ancestor "$c" origin/develop; then
@@ -106,12 +111,14 @@ jobs:
           echo "✅ Successfully cherry-picked hotfix into develop!"
 
       - name: Notify Slack on success (webhook)
-        if: ${{ success() && env.SLACK_WEBHOOK_URL != '' }}
+        if: ${{ success() && env.SLACK_WEBHOOK_URL != '' && steps.build_list.outputs.to_pick != '' }}
         shell: bash
         run: |
           PR_URL=${{ github.event.pull_request.html_url }}
           ACTOR=${{ github.event.pull_request.merged_by.login }}
+          COUNT=$(echo "${{ steps.build_list.outputs.to_pick }}" | wc -w)
           TEXT="✅ Cherry-pick completed successfully.\nRepository: ${{ github.repository }}\nFrom: main\nTo: develop\nPR: <${PR_URL}|view PR>\nMerged by: ${ACTOR}"
+          TEXT+="\nCommits applied: ${COUNT}"
           PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text, blocks: [{type:"section", text:{type:"mrkdwn", text:$text}}]}')
           curl -s -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"
 
@@ -124,3 +131,7 @@ jobs:
           TEXT=":warning: Cherry-pick failed while merging a hotfix into develop.\nRepository: ${{ github.repository }}\nPR: <${PR_URL}|view PR>\nMerged by: ${ACTOR}\n\nManual intervention is required."
           PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text, blocks: [{type:"section", text:{type:"mrkdwn", text:$text}}]}')
           curl -s -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"
+
+      - name: Slack not configured (notice)
+        if: ${{ env.SLACK_WEBHOOK_URL == '' }}
+        run: echo "Slack webhook not configured; set repo secret SLACK_WEBHOOK_URL to enable notifications."

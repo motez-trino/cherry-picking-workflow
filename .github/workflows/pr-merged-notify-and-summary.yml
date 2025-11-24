@@ -8,127 +8,83 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
   pull-requests: read
+  contents: read
+  issues: read
 
 jobs:
   pr-merged-notify:
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.merged == true }}
     runs-on: ubuntu-latest
     env:
-      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     steps:
-      - name: Build PR message
+      - name: Build Slack payload
         id: build
         uses: actions/github-script@v7
         with:
           script: |
-            const body = (context.payload.pull_request.body || '').toString();
-            const sanitize = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            const truncated = sanitize(body).slice(0, 1200);
-            const wrapped = truncated ? ('```' + truncated + '```') : '';
-            core.setOutput('sanitized_body', wrapped);
-
-      - name: Notify Slack (webhook) on PR merged
+            const body = (context.payload.pull_request.body || '').trim();
+            const max = 1000;
+            const truncated = body.length > max ? body.slice(0, max) + '\n…(truncated)…' : body;
+            const codeBlock = truncated ? '```\n' + truncated.replace(/```/g, '\u0060\u0060\u0060') + '\n```' : '_no description provided_';
+            const actor = context.payload.pull_request.merged_by ? context.payload.pull_request.merged_by.login : 'unknown';
+            const text = `:tada: *PR merged successfully!*\nRepository: *${context.repo.owner}/${context.repo.repo}*\nPR: <${context.payload.pull_request.html_url}|view PR>\nNumber: #${context.payload.pull_request.number}\nMerged Into: \`${context.payload.pull_request.base.ref}\`\nMerged by: *${actor}*\n\n${codeBlock}`;
+            core.setOutput('text', text);
+      - name: Notify Slack (webhook)
         if: ${{ env.SLACK_WEBHOOK_URL != '' }}
         run: |
-          payload=$(cat <<'JSON'
-          {
-            "text": ":tada: PR merged",
-            "blocks": [
-              {"type": "section", "text": {"type": "mrkdwn", "text": ":tada: *PR merged successfully!*\nRepository: *${{ github.repository }}*\nPR: <${{ github.event.pull_request.html_url }}|view PR>\nNumber: #${{ github.event.pull_request.number }}\nMerged Into: `${{ github.event.pull_request.base.ref }}`\nActor: *${{ github.event.pull_request.merged_by.login }}*"}},
-              {"type": "section", "text": {"type": "mrkdwn", "text": "${{ steps.build.outputs.sanitized_body }}"}}
-            ]
-          }
-          JSON
-          )
-          curl -X POST -H 'Content-type: application/json' --data "$payload" $SLACK_WEBHOOK_URL
-
-      - name: Notify Slack (bot) on PR merged
-        if: ${{ env.SLACK_WEBHOOK_URL == '' && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
-        uses: slackapi/slack-github-action@v1.27.0
-        with:
-          channel-id: ${{ env.SLACK_CHANNEL_ID }}
-          payload: |
-            {
-              "text": ":tada: PR merged",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {"type": "mrkdwn", "text": ":tada: *PR merged successfully!*\nRepository: *${{ github.repository }}*\nPR: <${{ github.event.pull_request.html_url }}|view PR>\nNumber: #${{ github.event.pull_request.number }}\nMerged Into: `${{ github.event.pull_request.base.ref }}`\nActor: *${{ github.event.pull_request.merged_by.login }}*"}
-                },
-                {
-                  "type": "section",
-                  "text": {"type": "mrkdwn", "text": "${{ steps.build.outputs.sanitized_body }}"}
-                }
-              ]
-            }
-        env:
-          SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
+          PAYLOAD=$(jq -n --arg text "${{ steps.build.outputs.text }}" '{text: $text, blocks: [{type:"section", text:{type:"mrkdwn", text:$text}}]}')
+          curl -s -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"
 
   daily-summary:
-    if: ${{ github.event_name == 'schedule' }}
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     env:
-      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     steps:
-      - name: Build summary
+      - name: Build merged PR summary for last 24h
         id: build
         uses: actions/github-script@v7
         with:
           script: |
             const { owner, repo } = context.repo;
-            const sinceISO = new Date(Date.now() - 24*60*60*1000).toISOString();
+            const sinceISO = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
             const q = `repo:${owner}/${repo} is:pr is:merged merged:>=${sinceISO}`;
-            const items = await github.paginate(github.rest.search.issuesAndPullRequests, { q, sort: 'updated', order: 'desc', per_page: 100 });
-            if (!items.length) {
+            const perPage = 50;
+            const items = [];
+            for (let page = 1; page <= 10; page++) {
+              const res = await github.rest.search.issuesAndPullRequests({ q, sort: 'updated', order: 'desc', per_page: perPage, page });
+              const batch = res.data.items || [];
+              if (batch.length === 0) break;
+              items.push(...batch);
+              if (batch.length < perPage) break;
+            }
+
+            if (items.length === 0) {
               core.setOutput('summary_text', 'No PRs merged in the last 24 hours.');
               return;
             }
+
+            // Fetch base branch for each PR
             const lines = [];
             for (const it of items) {
               const num = it.number;
               const pull = await github.rest.pulls.get({ owner, repo, pull_number: num });
               const base = pull.data.base.ref;
-              const mergedBy = (pull.data.merged_by && pull.data.merged_by.login) || 'unknown';
               const title = it.title;
               const url = it.html_url;
+              const mergedBy = pull.data.merged_by ? pull.data.merged_by.login : 'unknown';
               const mergedAt = pull.data.merged_at || it.closed_at || '';
               lines.push(`• #${num} ${title} → ${base} (by ${mergedBy})\n   ${url}\n   merged at ${mergedAt}`);
             }
+
             const header = `Merged PRs in the last 24 hours for ${owner}/${repo}`;
             const text = `${header}\n\n${lines.join('\n')}`;
             core.setOutput('summary_text', text);
 
-      - name: Notify Slack (webhook) daily summary
+      - name: Notify Slack daily merged PR summary (webhook)
         if: ${{ env.SLACK_WEBHOOK_URL != '' }}
         run: |
-          payload=$(cat <<'JSON'
-          {
-            "text": "${{ steps.build.outputs.summary_text }}",
-            "blocks": [
-              {"type": "section", "text": {"type": "mrkdwn", "text": "${{ steps.build.outputs.summary_text }}"}}
-            ]
-          }
-          JSON
-          )
-          curl -X POST -H 'Content-type: application/json' --data "$payload" $SLACK_WEBHOOK_URL
-
-      - name: Notify Slack (bot) daily summary
-        if: ${{ env.SLACK_WEBHOOK_URL == '' && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
-        uses: slackapi/slack-github-action@v1.27.0
-        with:
-          channel-id: ${{ env.SLACK_CHANNEL_ID }}
-          payload: |
-            {
-              "text": "${{ steps.build.outputs.summary_text }}",
-              "blocks": [
-                {"type": "section", "text": {"type": "mrkdwn", "text": "${{ steps.build.outputs.summary_text }}"}}
-              ]
-            }
-        env:
-          SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
+          PAYLOAD=$(jq -n --arg text "${{ steps.build.outputs.summary_text }}" '{text: $text, blocks: [{type:"section", text:{type:"mrkdwn", text:$text}}]}')
+          curl -s -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"

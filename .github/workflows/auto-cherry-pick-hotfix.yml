@@ -58,12 +58,14 @@ jobs:
               continue
             fi
             files=$(git show --pretty='' --name-only "$sha")
-            non_ci=$(echo "$files" | grep -Ev '^\\.github(/|$)') || true
-            if [ -z "$non_ci" ]; then
-              continue
-            fi
-            non_doc=$(echo "$non_ci" | grep -Ev '^(comments\\.txt)$') || true
-            if [ -z "$non_doc" ]; then
+            only_excluded=true
+            for f in $files; do
+              if ! echo "$f" | grep -Eq '^\\.github(/|$)|^comments\\.txt$'; then
+                only_excluded=false
+                break
+              fi
+            done
+            if [ "$only_excluded" = true ]; then
               continue
             fi
             if ! git cherry-pick -X theirs -n "$sha"; then
@@ -76,8 +78,18 @@ jobs:
                   comments.txt)
                     git rm -f "$p" || true
                     ;;
+                  *)
+                    git checkout --theirs "$p" || true
+                    git add "$p" || true
+                    ;;
                 esac
               done
+              # If conflicts remain, abort and mark conflict
+              if [ -n "$(git ls-files -u)" ]; then
+                git cherry-pick --abort
+                echo "conflict=true" >> $GITHUB_OUTPUT
+                exit 1
+              fi
               if ! git cherry-pick --continue; then
                 git cherry-pick --abort
                 echo "conflict=true" >> $GITHUB_OUTPUT

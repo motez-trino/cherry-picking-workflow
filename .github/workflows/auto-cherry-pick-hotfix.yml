@@ -40,20 +40,27 @@ jobs:
             echo "::error::Missing merge commit SHA"; exit 1
           fi
           git checkout develop || { echo "::error::Failed to checkout develop"; exit 1; }
-          if ! git cherry-pick -m 1 "$merge_sha"; then
+          if ! git cherry-pick -m 1 --no-commit "$merge_sha"; then
             echo "conflict=true" >> $GITHUB_OUTPUT
             exit 1
           fi
-          # Drop any workflow changes before pushing to develop to avoid permissions issues
-          git restore --staged --worktree --source=HEAD .github/workflows || :
-          echo "conflict=false" >> $GITHUB_OUTPUT
+          if git diff --quiet --cached --exit-code && git diff --quiet --exit-code; then
+            git reset --hard HEAD
+            echo "conflict=false" >> $GITHUB_OUTPUT
+            echo "noop=true" >> $GITHUB_OUTPUT
+          else
+            git commit -m "Cherry-pick PR merge $merge_sha from main"
+            git restore --staged --worktree --source=HEAD .github/workflows || :
+            echo "conflict=false" >> $GITHUB_OUTPUT
+            echo "noop=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Push changes to develop
-        if: ${{ steps.cherry_pick.outputs.conflict == 'false' }}
+        if: ${{ steps.cherry_pick.outputs.conflict == 'false' && steps.cherry_pick.outputs.noop != 'true' }}
         run: git push origin develop
 
       - name: Notify Slack on success
-        if: ${{ success() && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
+        if: ${{ success() && steps.cherry_pick.outputs.conflict == 'false' && steps.cherry_pick.outputs.noop != 'true' && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
         uses: slackapi/slack-github-action@v1.27.0
         with:
           channel-id: ${{ env.SLACK_CHANNEL_ID }}
@@ -64,6 +71,24 @@ jobs:
                 {
                   "type": "section",
                   "text": { "type": "mrkdwn", "text": "✅ *Cherry-pick completed.*\nRepo: *${{ github.repository }}*\nFrom: `main`\nTo: `develop`\nPR: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>\nMerge: <https://github.com/${{ github.repository }}/commit/${{ github.event.pull_request.merge_commit_sha }}|${{ github.event.pull_request.merge_commit_sha }}>\nMerged By: *${{ github.event.pull_request.merged_by.login }}*" }
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
+
+      - name: Notify Slack on no-op
+        if: ${{ success() && steps.cherry_pick.outputs.noop == 'true' && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          channel-id: ${{ env.SLACK_CHANNEL_ID }}
+          payload: |
+            {
+              "text": "ℹ️ Cherry-pick skipped (already applied)",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "ℹ️ *No changes to apply.*\nRepo: *${{ github.repository }}*\nPR: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>\nMerge: <https://github.com/${{ github.repository }}/commit/${{ github.event.pull_request.merge_commit_sha }}|${{ github.event.pull_request.merge_commit_sha }}>" }
                 }
               ]
             }

@@ -58,23 +58,38 @@ jobs:
               continue
             fi
             files=$(git show --pretty='' --name-only "$sha")
-            non_ci=$(echo "$files" | grep -Ev '^\.github(/|$)') || true
+            non_ci=$(echo "$files" | grep -Ev '^\\.github(/|$)') || true
             if [ -z "$non_ci" ]; then
               continue
             fi
-            non_doc=$(echo "$non_ci" | grep -Ev '^(comments\.txt)$') || true
+            non_doc=$(echo "$non_ci" | grep -Ev '^(comments\\.txt)$') || true
             if [ -z "$non_doc" ]; then
               continue
             fi
             if ! git cherry-pick -X theirs -n "$sha"; then
-              git cherry-pick --abort
-              echo "conflict=true" >> $GITHUB_OUTPUT
-              exit 1
+              conflict_files=$(git diff --name-only --diff-filter=U || true)
+              for p in $conflict_files; do
+                case "$p" in
+                  .github/*|.github*)
+                    git checkout --ours "$p" || true
+                    git add "$p" || true
+                    ;;
+                  comments.txt)
+                    git checkout --ours "$p" || true
+                    git add "$p" || true
+                    ;;
+                esac
+              done
+              if ! git cherry-pick --continue; then
+                git cherry-pick --abort
+                echo "conflict=true" >> $GITHUB_OUTPUT
+                exit 1
+              fi
             fi
-            if echo "$files" | grep -E '^\.github(/|$)'; then
+            if echo "$files" | grep -E '^\\.github(/|$)'; then
               git restore --staged --worktree --source=HEAD .github || true
             fi
-            if echo "$files" | grep -E '^comments\.txt$'; then
+            if echo "$files" | grep -E '^comments\\.txt$'; then
               git restore --staged --worktree --source=HEAD comments.txt || true
             fi
             applied=true
@@ -104,7 +119,7 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "✅ *Cherry-pick completed successfully.*\nRepository: *${{ github.repository }}*\nFrom: `main`\nTo: `develop`\nPR: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>\nMerged By: *${{ github.event.pull_request.merged_by.login }}*"
+                    "text": "✅ *Cherry-pick completed successfully.*\nRepository: *${{ github.repository }}*\nFrom: `main`\nTo: `develop`\nPR: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>\nMerge: <https://github.com/${{ github.repository }}/commit/${{ github.event.pull_request.merge_commit_sha }}|${{ github.event.pull_request.merge_commit_sha }}>\nMerged By: *${{ github.event.pull_request.merged_by.login }}*"
                   }
                 }
               ]

@@ -94,6 +94,9 @@ jobs:
             fi
             applied=true
           done <<< "${{ steps.list_commits.outputs.shas }}"
+          git restore --staged --worktree --source=HEAD .github/workflows || true
+          git restore --staged --worktree --source=HEAD .github || true
+          git restore --staged --worktree --source=HEAD comments.txt || true
           if [ "$applied" = true ] && ! git diff --cached --quiet; then
             git commit -m "Cherry-pick hotfix PR #${{ github.event.pull_request.number }} into develop (CI/docs excluded; prefer theirs on conflicts)"
             echo "already_applied=false" >> $GITHUB_OUTPUT

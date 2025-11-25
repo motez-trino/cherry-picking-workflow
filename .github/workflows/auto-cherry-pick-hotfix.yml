@@ -9,7 +9,6 @@ on:
 permissions:
   contents: write
   pull-requests: read
-  workflows: write
 
 jobs:
   cherry-pick:
@@ -45,6 +44,8 @@ jobs:
             echo "conflict=true" >> $GITHUB_OUTPUT
             exit 1
           fi
+          # Drop any workflow changes before pushing to develop to avoid permissions issues
+          git restore --staged --worktree --source=HEAD .github/workflows || :
           echo "conflict=false" >> $GITHUB_OUTPUT
 
       - name: Push changes to develop

@@ -71,12 +71,10 @@ jobs:
               for p in $conflict_files; do
                 case "$p" in
                   .github/*|.github*)
-                    git checkout --ours "$p" || true
-                    git add "$p" || true
+                    git rm -f "$p" || true
                     ;;
                   comments.txt)
-                    git checkout --ours "$p" || true
-                    git add "$p" || true
+                    git rm -f "$p" || true
                     ;;
                 esac
               done

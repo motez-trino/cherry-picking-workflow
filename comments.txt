@@ -205,3 +205,4 @@ Track via Metadata : Find a way to track which PRs have been processed. This can
 Please check and test which approach would work better for us.
 ali-jbara
 [12] Fixed: Added idempotency via a no-commit cherry-pick and a diff check. If no changes are produced, the workflow skips committing/pushing and sends an informational Slack message.
+[DOC TEST] hotfix/doc-only-1: add doc-only line for workflow skip validation

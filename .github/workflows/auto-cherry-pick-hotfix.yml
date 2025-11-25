@@ -9,6 +9,7 @@ on:
 permissions:
   contents: write
   pull-requests: read
+  workflows: write
 
 jobs:
   cherry-pick:
@@ -32,172 +33,52 @@ jobs:
       - name: Fetch develop branch
         run: git fetch origin develop
 
-      - name: List PR commits
-        id: list_commits
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const { owner, repo } = context.repo;
-            const num = context.payload.pull_request.number;
-            const commits = await github.paginate(github.rest.pulls.listCommits, { owner, repo, pull_number: num, per_page: 100 });
-            const shas = commits.map(c => c.sha);
-            core.setOutput('shas', shas.join('\n'));
-
-      - name: Cherry-pick commits into develop
+      - name: Cherry-pick merge commit into develop
         id: cherry_pick
         run: |
-          git checkout develop || { echo "Failed to checkout develop"; exit 1; }
-          conflict=false
-          applied=false
-          while IFS= read -r sha; do
-            parents_count=$(git show -s --pretty=%P "$sha" | wc -w)
-            if [ "$parents_count" -gt 1 ]; then
-              continue
-            fi
-            if git merge-base --is-ancestor "$sha" develop; then
-              continue
-            fi
-            files=$(git show --pretty='' --name-only "$sha")
-            only_excluded=true
-            for f in $files; do
-              if ! echo "$f" | grep -Eq '^\\.github(/|$)|^comments\\.txt$'; then
-                only_excluded=false
-                break
-              fi
-            done
-            if [ "$only_excluded" = true ]; then
-              continue
-            fi
-            if ! git cherry-pick -X theirs -n "$sha"; then
-              conflict_files=$(git diff --name-only --diff-filter=U || true)
-              for p in $conflict_files; do
-                case "$p" in
-                  .github/*|.github*)
-                    git rm -f "$p" || true
-                    ;;
-                  comments.txt)
-                    git rm -f "$p" || true
-                    ;;
-                  *)
-                    git checkout --theirs "$p" || true
-                    git add "$p" || true
-                    ;;
-                esac
-              done
-              # If conflicts remain, abort and mark conflict
-              if [ -n "$(git ls-files -u)" ]; then
-                git cherry-pick --abort
-                echo "conflict=true" >> $GITHUB_OUTPUT
-                exit 1
-              fi
-              if ! git cherry-pick --continue; then
-                git cherry-pick --abort
-                echo "conflict=true" >> $GITHUB_OUTPUT
-                exit 1
-              fi
-            fi
-            if echo "$files" | grep -E '^\\.github(/|$)'; then
-              git restore --staged --worktree --source=HEAD .github || true
-            fi
-            if echo "$files" | grep -E '^comments\\.txt$'; then
-              git restore --staged --worktree --source=HEAD comments.txt || true
-            fi
-            applied=true
-          done <<< "${{ steps.list_commits.outputs.shas }}"
-          git restore --staged --worktree --source=HEAD .github/workflows || true
-          git restore --staged --worktree --source=HEAD .github || true
-          git restore --staged --worktree --source=HEAD comments.txt || true
-          if [ "$applied" = true ] && ! git diff --cached --quiet; then
-            git commit -m "Cherry-pick hotfix PR #${{ github.event.pull_request.number }} into develop (CI/docs excluded; prefer theirs on conflicts)"
-            echo "already_applied=false" >> $GITHUB_OUTPUT
-          else
-            echo "already_applied=true" >> $GITHUB_OUTPUT
+          merge_sha="${{ github.event.pull_request.merge_commit_sha }}"
+          if [ -z "$merge_sha" ]; then
+            echo "::error::Missing merge commit SHA"; exit 1
+          fi
+          git checkout develop || { echo "::error::Failed to checkout develop"; exit 1; }
+          if ! git cherry-pick -m 1 "$merge_sha"; then
+            echo "conflict=true" >> $GITHUB_OUTPUT
+            exit 1
           fi
           echo "conflict=false" >> $GITHUB_OUTPUT
 
       - name: Push changes to develop
-        if: ${{ steps.cherry_pick.outputs.conflict == 'false' && steps.cherry_pick.outputs.already_applied == 'false' }}
+        if: ${{ steps.cherry_pick.outputs.conflict == 'false' }}
         run: git push origin develop
 
-      - name: Notify Slack (bot) on success
-        if: ${{ success() && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' && steps.cherry_pick.outputs.already_applied == 'false' }}
+      - name: Notify Slack on success
+        if: ${{ success() && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
         uses: slackapi/slack-github-action@v1.27.0
         with:
           channel-id: ${{ env.SLACK_CHANNEL_ID }}
           payload: |
             {
-              "text": "✅ Hotfix cherry-picked to develop",
+              "text": "✅ Hotfix cherry-picked",
               "blocks": [
                 {
                   "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "✅ *Cherry-pick completed successfully.*\nRepository: *${{ github.repository }}*\nFrom: `main`\nTo: `develop`\nPR: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>\nMerge: <https://github.com/${{ github.repository }}/commit/${{ github.event.pull_request.merge_commit_sha }}|${{ github.event.pull_request.merge_commit_sha }}>\nMerged By: *${{ github.event.pull_request.merged_by.login }}*"
-                  }
+                  "text": { "type": "mrkdwn", "text": "✅ *Cherry-pick completed.*\nRepo: *${{ github.repository }}*\nFrom: `main`\nTo: `develop`\nPR: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>\nMerge: <https://github.com/${{ github.repository }}/commit/${{ github.event.pull_request.merge_commit_sha }}|${{ github.event.pull_request.merge_commit_sha }}>\nMerged By: *${{ github.event.pull_request.merged_by.login }}*" }
                 }
               ]
             }
         env:
           SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
 
-      - name: Notify Slack (bot) already applied
-        if: ${{ success() && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' && steps.cherry_pick.outputs.already_applied == 'true' }}
+      - name: Notify Slack on failure
+        if: ${{ failure() && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
         uses: slackapi/slack-github-action@v1.27.0
         with:
           channel-id: ${{ env.SLACK_CHANNEL_ID }}
           payload: |
             {
-              "text": "ℹ️ Hotfix already present in develop",
+              "text": ":x: Cherry-pick failed",
               "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "ℹ️ Commits from hotfix PR #${{ github.event.pull_request.number }} are already present in `develop`."
-                  }
-                }
-              ]
-            }
-        env:
-          SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
-
-      - name: Notify Slack (bot) on conflict
-        if: ${{ steps.cherry_pick.outcome == 'failure' && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' && steps.cherry_pick.outputs.conflict == 'true' }}
-        uses: slackapi/slack-github-action@v1.27.0
-        with:
-          channel-id: ${{ env.SLACK_CHANNEL_ID }}
-          payload: |
-            {
-              "text": ":warning: Cherry-pick conflict detected",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": ":warning: *Cherry-pick failed while merging a hotfix into `develop`.*\nRepository: *${{ github.repository }}*\nPR: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>\nMerged By: *${{ github.event.pull_request.merged_by.login }}*\n\nManual intervention is required."
-                  }
-                }
-              ]
-            }
-        env:
-          SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
-
-      - name: Notify Slack (bot) on other failure
-        if: ${{ failure() && (steps.cherry_pick.outputs.conflict != 'true') && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
-        uses: slackapi/slack-github-action@v1.27.0
-        with:
-          channel-id: ${{ env.SLACK_CHANNEL_ID }}
-          payload: |
-            {
-              "text": ":x: Cherry-pick workflow failed",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": ":x: *Cherry-pick workflow encountered an error unrelated to merge conflicts.*\nRepository: *${{ github.repository }}*\nPR: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>"
-                  }
-                }
+                { "type": "section", "text": { "type": "mrkdwn", "text": ":x: *Cherry-pick failed.*\nRepo: *${{ github.repository }}*\nPR: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>" } }
               ]
             }
         env:

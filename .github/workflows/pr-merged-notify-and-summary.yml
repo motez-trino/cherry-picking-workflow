@@ -13,8 +13,7 @@ jobs:
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.merged == true }}
     runs-on: ubuntu-latest
     env:
-      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     steps:
       - name: Prepare PR body
         id: prepare_body
@@ -24,31 +23,19 @@ jobs:
             const body = context.payload.pull_request?.body || '';
             const trunc = body.length > 800 ? body.slice(0, 800) + '…' : body;
             const wrapped = '```\n' + trunc.replace(/```/g, '``\`') + '\n```';
-            core.setOutput('body_sanitized_json', JSON.stringify(wrapped));
+            core.setOutput('body_sanitized', wrapped);
       - name: Notify Slack on PR merged
-        if: ${{ env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
-        uses: slackapi/slack-github-action@v1.27.0
+        if: ${{ env.SLACK_WEBHOOK_URL != '' }}
+        uses: 8398a7/action-slack@v3
         with:
-          channel-id: ${{ env.SLACK_CHANNEL_ID }}
-          payload: |
-            {
-              "text": ":tada: PR merged successfully!",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": ":tada: *PR merged successfully!*\nRepository: *${{ github.repository }}*\nPR: <${{ github.event.pull_request.html_url }}|view PR>\nNumber: #${{ github.event.pull_request.number }}\nMerged Into: `${{ github.event.pull_request.base.ref }}`\nMerged By: *${{ github.event.pull_request.merged_by.login }}*"
-                  }
-                },
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": ${{ steps.prepare_body.outputs.body_sanitized_json }}
-                  }
-                }
-              ]
-            }
+          status: success
+          text: |
+            🎉 PR merged successfully
+            Repository: ${{ github.repository }}
+            PR: #${{ github.event.pull_request.number }} (${{ github.event.pull_request.html_url }})
+            Merged Into: ${{ github.event.pull_request.base.ref }}
+            Merged By: ${{ github.event.pull_request.merged_by.login }}
+
+            ${{ steps.prepare_body.outputs.body_sanitized }}
         env:
-          SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK_URL }}

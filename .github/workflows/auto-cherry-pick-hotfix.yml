@@ -15,8 +15,7 @@ jobs:
     if: ${{ github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'hotfix/') }}
     runs-on: ubuntu-latest
     env:
-      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
     steps:
       - name: Checkout repository
@@ -60,52 +59,41 @@ jobs:
         run: git push origin develop
 
       - name: Notify Slack on success
-        if: ${{ success() && steps.cherry_pick.outputs.conflict == 'false' && steps.cherry_pick.outputs.noop != 'true' && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
-        uses: slackapi/slack-github-action@v1.27.0
+        if: ${{ success() && steps.cherry_pick.outputs.conflict == 'false' && steps.cherry_pick.outputs.noop != 'true' && env.SLACK_WEBHOOK_URL != '' }}
+        uses: 8398a7/action-slack@v3
         with:
-          channel-id: ${{ env.SLACK_CHANNEL_ID }}
-          payload: |
-            {
-              "text": "✅ Hotfix cherry-picked",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": { "type": "mrkdwn", "text": "✅ *Cherry-pick completed.*\nRepo: *${{ github.repository }}*\nFrom: `main`\nTo: `develop`\nPR: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>\nMerge: <https://github.com/${{ github.repository }}/commit/${{ github.event.pull_request.merge_commit_sha }}|${{ github.event.pull_request.merge_commit_sha }}>\nMerged By: *${{ github.event.pull_request.merged_by.login }}*" }
-                }
-              ]
-            }
+          status: success
+          text: |
+            ✅ Cherry-pick completed
+            Repository: ${{ github.repository }}
+            From: main → To: develop
+            PR: #${{ github.event.pull_request.number }} (${{ github.event.pull_request.html_url }})
+            Merge: https://github.com/${{ github.repository }}/commit/${{ github.event.pull_request.merge_commit_sha }}
+            Merged By: ${{ github.event.pull_request.merged_by.login }}
         env:
-          SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK_URL }}
 
       - name: Notify Slack on no-op
-        if: ${{ success() && steps.cherry_pick.outputs.noop == 'true' && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
-        uses: slackapi/slack-github-action@v1.27.0
+        if: ${{ success() && steps.cherry_pick.outputs.noop == 'true' && env.SLACK_WEBHOOK_URL != '' }}
+        uses: 8398a7/action-slack@v3
         with:
-          channel-id: ${{ env.SLACK_CHANNEL_ID }}
-          payload: |
-            {
-              "text": "ℹ️ Cherry-pick skipped (already applied)",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": { "type": "mrkdwn", "text": "ℹ️ *No changes to apply.*\nRepo: *${{ github.repository }}*\nPR: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>\nMerge: <https://github.com/${{ github.repository }}/commit/${{ github.event.pull_request.merge_commit_sha }}|${{ github.event.pull_request.merge_commit_sha }}>" }
-                }
-              ]
-            }
+          status: success
+          text: |
+            ℹ️ Cherry-pick skipped (already applied)
+            Repository: ${{ github.repository }}
+            PR: #${{ github.event.pull_request.number }} (${{ github.event.pull_request.html_url }})
+            Merge: https://github.com/${{ github.repository }}/commit/${{ github.event.pull_request.merge_commit_sha }}
         env:
-          SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK_URL }}
 
       - name: Notify Slack on failure
-        if: ${{ failure() && env.SLACK_BOT_TOKEN != '' && env.SLACK_CHANNEL_ID != '' }}
-        uses: slackapi/slack-github-action@v1.27.0
+        if: ${{ failure() && env.SLACK_WEBHOOK_URL != '' }}
+        uses: 8398a7/action-slack@v3
         with:
-          channel-id: ${{ env.SLACK_CHANNEL_ID }}
-          payload: |
-            {
-              "text": ":x: Cherry-pick failed",
-              "blocks": [
-                { "type": "section", "text": { "type": "mrkdwn", "text": ":x: *Cherry-pick failed.*\nRepo: *${{ github.repository }}*\nPR: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }}>" } }
-              ]
-            }
+          status: failure
+          text: |
+            ❌ Cherry-pick failed
+            Repository: ${{ github.repository }}
+            PR: #${{ github.event.pull_request.number }} (${{ github.event.pull_request.html_url }})
         env:
-          SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK_URL }}

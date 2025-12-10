@@ -3,6 +3,9 @@ name: PR Merged Notify and Daily Summary
 on:
   pull_request:
     types: [closed]
+    branches:
+      - main
+      - staging
   schedule:
     - cron: "0 16 * * *"
   workflow_dispatch:
@@ -13,7 +16,7 @@ permissions:
 
 jobs:
   pr-merged-notify:
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.merged == true }}
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.merged == true && (github.event.pull_request.base.ref == 'main' || github.event.pull_request.base.ref == 'staging') }}
     runs-on: ubuntu-latest
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.PR_MERGED_WEBHOOK_URL }}
@@ -54,9 +57,26 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const sinceISO = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-            const q = `repo:${owner}/${repo} is:pr is:merged merged:>=${sinceISO}`;
-            const res = await github.rest.search.issuesAndPullRequests({ q, sort: 'updated', order: 'desc', per_page: 50 });
-            const items = res.data.items || [];
+            const perPage = 50;
+            async function searchAll(q) {
+              let page = 1;
+              const out = [];
+              for (;;) {
+                const res = await github.rest.search.issuesAndPullRequests({ q, sort: 'updated', order: 'desc', per_page: perPage, page });
+                const batch = res.data.items || [];
+                if (batch.length === 0) break;
+                out.push(...batch);
+                if (batch.length < perPage || out.length >= 1000) break;
+                page++;
+              }
+              return out;
+            }
+            const qMain = `repo:${owner}/${repo} is:pr is:merged base:main merged:>=${sinceISO}`;
+            const qStaging = `repo:${owner}/${repo} is:pr is:merged base:staging merged:>=${sinceISO}`;
+            const items = [
+              ...await searchAll(qMain),
+              ...await searchAll(qStaging)
+            ];
             if (items.length === 0) {
               core.setOutput('summary_text', 'No PRs merged in the last 24 hours.');
               return;

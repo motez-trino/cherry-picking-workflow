@@ -1,8 +1,14 @@
-name: PR Merged Notify
+name: PR Merged Notify and Daily Summary
 
 on:
   pull_request:
     types: [closed]
+    branches:
+      - main
+      - staging
+  schedule:
+    - cron: "0 16 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -10,10 +16,10 @@ permissions:
 
 jobs:
   pr-merged-notify:
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.merged == true }}
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.merged == true && (github.event.pull_request.base.ref == 'main' || github.event.pull_request.base.ref == 'staging') }}
     runs-on: ubuntu-latest
     env:
-      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      SLACK_WEBHOOK_URL: ${{ secrets.PR_MERGED_WEBHOOK_URL }}
     steps:
       - name: Prepare PR body
         id: prepare_body
@@ -37,5 +43,63 @@ jobs:
             Merged By: ${{ github.event.pull_request.merged_by.login }}
 
             ${{ steps.prepare_body.outputs.body_sanitized }}
-        env:
-          SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK_URL }}
+
+  daily-summary:
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.PR_MERGED_WEBHOOK_URL }}
+    steps:
+      - name: Build merged PR summary for last 24h
+        id: build
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const sinceISO = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+            const perPage = 50;
+            async function searchAll(q) {
+              let page = 1;
+              const out = [];
+              for (;;) {
+                const res = await github.rest.search.issuesAndPullRequests({ q, sort: 'updated', order: 'desc', per_page: perPage, page });
+                const batch = res.data.items || [];
+                if (batch.length === 0) break;
+                out.push(...batch);
+                if (batch.length < perPage || out.length >= 1000) break;
+                page++;
+              }
+              return out;
+            }
+            const qMain = `repo:${owner}/${repo} is:pr is:merged base:main merged:>=${sinceISO}`;
+            const qStaging = `repo:${owner}/${repo} is:pr is:merged base:staging merged:>=${sinceISO}`;
+            const items = [
+              ...await searchAll(qMain),
+              ...await searchAll(qStaging)
+            ];
+            if (items.length === 0) {
+              core.setOutput('summary_text', 'No PRs merged in the last 24 hours.');
+              return;
+            }
+            const lines = [];
+            for (const it of items) {
+              const num = it.number;
+              const pull = await github.rest.pulls.get({ owner, repo, pull_number: num });
+              const base = pull.data.base.ref;
+              const title = it.title;
+              const url = it.html_url;
+              const mergedBy = pull.data.merged_by ? pull.data.merged_by.login : 'unknown';
+              const mergedAt = pull.data.merged_at || it.closed_at || '';
+              lines.push(`• #${num} ${title} → ${base} (by ${mergedBy})\n   ${url}\n   merged at ${mergedAt}`);
+            }
+            const header = `Merged PRs in the last 24 hours for ${owner}/${repo}`;
+            const text = `${header}\n\n${lines.join('\n')}`;
+            core.setOutput('summary_text', text);
+
+      - name: Notify Slack daily merged PR summary
+        if: ${{ env.SLACK_WEBHOOK_URL != '' }}
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          text: |
+            ${{ steps.build.outputs.summary_text }}
